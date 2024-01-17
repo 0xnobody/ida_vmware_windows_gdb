@@ -57,10 +57,12 @@ import idc
 import ida_loader
 import ida_netnode
 import ida_kernwin
+import ida_dbg
+import ida_idd
 
 # Path to the folder, that contains files from the \SystemRoot\system32
 # of your debug target.
-SYSTEM32_COPY_PATH = r"C:\dreg\system32"
+SYSTEM32_COPY_PATH = r"D:\vmware_guest\System32"
 
 class TYPE_L:
     WHITE_LIST = 1
@@ -176,11 +178,13 @@ def find_sign(addr, sign):
         + IMAGE_NT_HEADERS_OptionalHeader
         + IMAGE_OPTIONAL_HEADER_SizeOfImage
     )
-    l = 0
+    print("size: %lx" % SizeOfImage)
+    l = 0x500000
     while l < SizeOfImage:
         matched = True
         for i in range(0, len(sign)):
             b = RByte(addr + l + i)
+            #print("%lx: %x vs %x" % (l, sign[i], b))
             if sign[i] is not None and sign[i] != b:
                 matched = False
                 break
@@ -236,11 +240,11 @@ def find_PsLoadedModuleList_64(addr):
         0x00,
         0x00,  # mov     dword ptr [rbx+30h], 8664h
         0x89,
-        0x93,
+        None,
         0x98,
         0x0F,
         0x00,
-        0x00,  # mov     [rbx+0F98h], edx
+        0x00,  # mov     [rbx+0F98h], ?reg?
         0x48,
         0x8B,
         0x05,
@@ -311,6 +315,8 @@ def walk_modulelist(list, callback):
     cur_mod = Ptr(list)
     # loop until we come back to the beginning
     while cur_mod != list and cur_mod != ida_idaapi.BADADDR:
+        print("Processing 0x%lx" % cur_mod)
+        
         BaseAddress = Ptr(cur_mod + LDR_DATA_TABLE_ENTRY_BaseAddress)
         EntryPoint = Ptr(cur_mod + LDR_DATA_TABLE_ENTRY_EntryPoint)
         SizeOfImage = Ptr(cur_mod + LDR_DATA_TABLE_ENTRY_SizeOfImage)
@@ -333,7 +339,7 @@ def walk_modulelist(list, callback):
 
 def get_module_base(addr):
     if is_64bit():
-        page_mask = 0xFFFFFFFFFFFFF000
+        page_mask = 0xFFFFFFFFFFFF0000
     else:
         page_mask = 0xFFFFF000
     # align address by PAGE_SIZE
@@ -343,9 +349,10 @@ def get_module_base(addr):
     while l < 5 * 1024 * 1024:
         # check for the MZ signature
         w = RWord(addr - l)
-        if w == 0x5A4D:
+        num_sections = RWord(addr - l + 0x11E)
+        if w == 0x5A4D and num_sections > 0x10:
             return addr - l
-        l += 0x1000
+        l += 0x10000
     raise Exception("get_module_base(): Unable to locate DOS signature")
 
 
@@ -415,7 +422,49 @@ else:
     get_interrupt_vector = get_interrupt_vector_32
     find_PsLoadedModuleList = find_PsLoadedModuleList_32
 
+def map_memory():
+    ida_dbg.enable_manual_regions(1)
+    infos = ida_idd.meminfo_vec_t()
+    
+    user = ida_idd.memory_info_t()
+    user.perm = 7
+    user.bitness = 2
+    user.sbase = 0
+    user.sclass = "UNK"
+    user.name = "USER"
+    user.start_ea = 0
+    user.end_ea = 0x7FFFFFFFFFE
+    
+    infos.push_back(user)
+    
+    kernel = ida_idd.memory_info_t()
+    kernel.perm = 7
+    kernel.bitness = 2
+    kernel.sbase = 0
+    kernel.sclass = "UNK"
+    kernel.name = "KERNEL"
+    kernel.start_ea = 0xFFFFF80000000000
+    kernel.end_ea = 0xFFFFFFFFFFFFFFFE
+    
+    infos.push_back(kernel)
+    
+    unkn = ida_idd.memory_info_t()
+    unkn.perm = 7
+    unkn.bitness = 2
+    unkn.sbase = 0
+    unkn.sclass = "UNK"
+    unkn.name = "USER"
+    unkn.start_ea = 0x7FFFFFFFFFF
+    unkn.end_ea = 0xFFFFF7FFFFFFFFFF
+    
+    infos.push_back(unkn)
+    
+    idaapi.set_manual_regions(infos)
+
+map_memory()
+
 addr = get_interrupt_vector(0)
+print("IDT[0] at %s" % str(hex(addr)))
 kernel_base = get_module_base(addr)
 print("Kernel base is %s" % str(hex(kernel_base)))
 PsLoadedModuleList = find_PsLoadedModuleList(kernel_base)
